@@ -1,0 +1,3 @@
+﻿#启动文件
+/app/bin/start.sh
+/app/bin/startConsole.sh

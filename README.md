@@ -44,7 +44,7 @@ Batch scripts
 ### Notice:
 - The script file is encoded using the GBK code
 
-## BatchScripts
+## Concurrencesh
 ### type:
 Shell scripts
 ### Function:
@@ -60,3 +60,18 @@ Multithreading runs tasks in the shell
 	&#8194;&#8194;Control parallel execution by queue
 5. fifo.sh:  
 	&#8194;&#8194;Control parallel execution by named pipe
+
+## StatisticsResult
+### type:
+Shell scripts
+### Function:
+The total number of completed today is compared with the number of completed yesterday, showing the statistical results, the comparison results and the details
+### Usage:
+1. raw.txt:    
+	&#8194;&#8194;Completion status
+2. xxxx-xx-xxreport.txt:  
+	&#8194;&#8194;Yesterday's statistics
+3. report.sh:  
+	&#8194;&#8194;Statistic result today, generate a file, name is xxxx-xx-xxreport.txt
+### Notice:
+- xxxx-xx-xxreport.txt, this file's date is yesterday, it contains yesterday's statistics

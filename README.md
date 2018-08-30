@@ -28,18 +28,35 @@ Batch scripts
 1. poweroff
 	- poweroff.bat:  
 	&#8194;&#8194;Run bat, timing shut down or shut down directly
-	- generate_poweroff.bat
+	- generate_poweroff.bat:  
 	&#8194;&#8194;Create the shutdown script and generate shortcuts
 2. showDesktop
-	- showDesktop.scf
+	- showDesktop.scf:  
 	&#8194;&#8194;Run scf, back to desktop
-	- generate_showDesktop.bat
+	- generate_showDesktop.bat:  
 	&#8194;&#8194;Create back to desktop scripts and generate shortcuts
 3. getAdmin
-	- getAdminExecute.bat
+	- getAdminExecute.bat:  
 	&#8194;&#8194;Get administrator privileges to execute commands
 4. replaceHosts
-	- replaceHosts.bat
+	- replaceHosts.bat:  
 	&#8194;&#8194;Replace the hosts file in the Windows system with the hosts file under this directory
 ### Notice:
 - The script file is encoded using the GBK code
+
+## BatchScripts
+### type:
+Shell scripts
+### Function:
+Multithreading runs tasks in the shell
+### Function:
+1. circulation.sh:  
+	&#8194;&#8194;Sequential execution
+2. circu_concurr.sh:  
+	&#8194;&#8194;Parallel execution, but lack of control
+3. circu_concurr_ctl.sh:  
+	&#8194;&#8194;Parallel execution, but a slow process can affect efficiency
+4. queue.sh:  
+	&#8194;&#8194;Control parallel execution by queue
+5. fifo.sh:  
+	&#8194;&#8194;Control parallel execution by named pipe

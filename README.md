@@ -49,7 +49,7 @@ Batch scripts
 Shell scripts
 ### Function:
 Multithreading runs tasks in the shell
-### Function:
+### Usage:
 1. circulation.sh:  
 	&#8194;&#8194;Sequential execution
 2. circu_concurr.sh:  

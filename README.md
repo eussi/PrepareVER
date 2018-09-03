@@ -88,5 +88,7 @@ Adjust the order in which the database export builds tables, and update the prot
 	&#8194;&#8194;Encrypted test data by TrueCrypt
 3. correctSql.sh:  
 	&#8194;&#8194;arg1 is oldfile, arg2 is adjustfile, run this file, adjust order and update protocol information
+4. correctSql2.sh:  
+	&#8194;&#8194;arg1 is oldfile, arg2 is adjustfile, run this file, adjust order and update protocol information, correctSql.sh has some problems, eg: too long args, deal slowly
 ### Notice:
 - password is clearly

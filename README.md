@@ -100,6 +100,17 @@ Shell scripts
 Split a large time range into many small time ranges to execute SQL statements
 ### Usage:
 1. search-mysql.sh:  
-	&#8194;&#8194;just run it!
+	&#8194;&#8194;just run it
 ### Notice:
-- No parameters are used in the script, and some variables are required before execution
+- No arguments are used in the script, and some variables in the script need to be modified before execution
+
+## AutoDeployApp
+### type:
+Shell scripts
+### Function:
+Automatic deployment application
+### Usage:
+1. installAgent.sh:  
+	&#8194;&#8194;Install distributed Agent,just run it
+### Notice:
+- No arguments are used in the script, and some variables in the script need to be modified before execution

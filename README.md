@@ -92,3 +92,14 @@ Adjust the order in which the database export builds tables, and update the prot
 	&#8194;&#8194;arg1 is oldfile, arg2 is adjustfile, run this file, adjust order and update protocol information, correctSql.sh has some problems, eg: too long args, deal slowly
 ### Notice:
 - password is clearly
+
+## ExecuteSql
+### type:
+Shell scripts
+### Function:
+Split a large time range into many small time ranges to execute SQL statements
+### Usage:
+1. search-mysql.sh:  
+	&#8194;&#8194;just run it!
+### Notice:
+- No parameters are used in the script, and some variables are required before execution

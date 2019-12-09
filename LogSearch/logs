@@ -1,0 +1,635 @@
+#!/bin/bash
+# author 
+#	xueming.wang
+# date
+# 	2019-12-03
+# program:
+#	日志查询工具
+
+#定义打印格式
+NORM="\033[0m"
+BOLD="\033[1m"
+BLNK="\033[5m"
+HIGH="\033[7m"
+
+#打印函数
+printMsg() {
+	mesg=$1
+	head=$2
+	tail=$3
+	echo -e "${head}${mesg}${tail}"
+}
+
+#ini配置文件
+#CONFIGFILE=~/.bin/logs.ini
+CONFIGFILE=`pwd`/logs.ini
+
+#默认环境
+DEFAULT_ENV=SIT
+#数据库查询时，服务详细信息显示默认记录数
+SHOW_SERVICE_NUM=3
+#定义临时文件，用与暂存数据
+LOGTMP=$HOME/.tmp/logs
+
+#帮助菜单
+helpMenu() {
+        printFlag "~" 100
+	printMsg "Usage for logs:" "${BOLD}" "${NORM}"
+	printFlag "-" 100
+	printMsg "-help|?  打印帮助信息" "${BOLD}" "${NORM}"
+	printMsg "-e       指定读取${CONFIGFILE}文件中环境信息，默认SIT" "${BOLD}" "${NORM}"
+	printMsg "-b       指定搜索全局流水号" "${BOLD}" "${NORM}"
+	printMsg "-f       指定搜索流水号" "${BOLD}" "${NORM}"
+ 	printMsg "-t       指定搜索时间范围，格式见下面说明，默认从当天零点开始到当前时间" "${BOLD}" "${NORM}"
+	printMsg "-c       指定搜索渠道号" "${BOLD}" "${NORM}"
+	printMsg "-m       指定搜索系统号" "${BOLD}" "${NORM}"
+	printMsg "-r       指定搜索成功状态，'S'或'F'" "${BOLD}" "${NORM}"
+	printMsg "-h       数据库查询中，默认显示详细信息，仅最多显示[变量SHOW_SERVICE_NUM(${SHOW_SERVICE_NUM})]条记录，'F'表示关闭显示" "${BOLD}" "${NORM}"
+	printMsg "-n       数据库查询中，默认显示[变量SHOW_SERVICE_NUM(${SHOW_SERVICE_NUM})]条记录，此设置改变该默认值" "${BOLD}" "${NORM}"
+	printMsg "-d       本机安装mysql,默认会搜索DB，该参数取消查询数据库，'F'代表取消" "${BOLD}" "${NORM}"
+	printMsg "-l       本机安装sshpass,默认会搜索远程日志，该参数取消日志搜索，'F'代表取消" "${BOLD}" "${NORM}"
+	printMsg "注:" "${BOLD}" "${NORM}"
+	printMsg "    当使用-t选项是，支持两种格式，N-M或N，N或M代表当前时间减去N或M时间段。" "${BOLD}" "${NORM}"
+ 	printMsg "例如：5d，代表查询开始时间为5天之前到当前时间段数据；6m-2m，代表查询开始时" "${BOLD}" "${NORM}"
+ 	printMsg "间6分钟之前到2分钟之前时间段数据。其中后缀支持d(天),h(时),m(分),s(秒)" "${BOLD}" "${NORM}"
+ 	printMsg "    远程登录查询服务器本地日志只针对-e,-b,-f选项，其中-b与-f至少输入一项," "${BOLD}" "${NORM}"
+ 	printMsg "-b和-f都不存在将不进行搜索操作，如果两者都存在，则只使用-b(全局流水号)匹配" "${BOLD}" "${NORM}"
+ 	printMsg "    注意以上输入字段均是精确匹配，其中-b,-f为模糊匹配搜索服务器日志可以匹" "${BOLD}" "${NORM}"
+ 	printMsg "配到内容，但是后续的交易详细信息会逻辑错乱。" "${BOLD}" "${NORM}"
+	printFlag "-" 100
+	echo
+	exit
+}
+
+#检测配置文件是否存在
+if [ ! -s "$CONFIGFILE" ];then
+	printMsg "Error: 请添加配置文件$CONFIGFILE"  "${BOLD}" "${NORM}"
+	exit
+fi
+
+#因为涉及到数据库查询和远程登录查询本地日志，这里使用了mysql和sshpass命令
+#若不安装，会忽略需要使用该命令完成的功能
+USE_DB=1
+USE_SSHPASS=1
+sshpass -V > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+	printMsg "Warning: sshpass未安装，将忽略涉及远程登录的日志搜索"  "${BOLD}" "${NORM}"
+	USE_SSHPASS=0
+fi
+mysql -V > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+        printMsg "Warning: mysql未安装，将忽略涉及数据库的日志搜索"  "${BOLD}" "${NORM}"
+        USE_DB=0
+fi
+
+#进程PID
+PID=$$
+#echo "PID:${PID}"
+
+#获取输入参数
+inputParams=$@
+inputParamNum=$#
+
+#创建临时文件
+mkdir -p $LOGTMP
+tmpserver=$LOGTMP/tmpserver.${PID}
+tmpsql=$LOGTMP/tmpsql.${PID}
+tmpdata=$LOGTMP/tmpdata.${PID}
+tmpdata2=$LOGTMP/tmpdata2.${PID}
+tmpdetail=$LOGTMP/tmpdetail.${PID}
+tmpdetail2=$LOGTMP/tmpdetail2.${PID}
+tmpremote=$LOGTMP/tmpremote.${PID}
+tmprmtresult=$LOGTMP/tmprmtresult/
+mkdir -p $tmprmtresult #存放查询到文件,按服务码存储，方便分析
+
+#打印指定数量符号
+printFlag() {
+	flag=$1
+	num=$2
+    	strflg=$(printf "%-${num}s" "${flag}")
+    	echo "${strflg// /${flag}}"
+}
+
+#清理5分钟前过期文件
+cleanTmpTOU() {
+	DELDIR=$1
+	find $DELDIR -type f -mmin +5 -exec rm {} \;
+}
+
+#数据库操作函数
+operateDB() {
+	OUTPUT=$1
+	mysql -h${DATABASE_IP} -P${DATABASE_PORT} -u${DATABASE_USER} -p${DATABASE_PASSWORD} ${DATABASE_DB} --default-character-set=utf8 -N < $tmpsql 2>/dev/null > $OUTPUT
+    	echo $?
+}
+
+#检验输入命令，包含-help|?，或者包含一串[[-? *] ...]形式为合法
+checkParamsValid() {
+	ret=`echo - $1 | awk '{arrLen=split($0,arr," +");if(arrLen==2&&(arr[2]=="?"||arr[2]=="-help"))ret=0;else if(arrLen!=1&&arrLen%2!=0)ret=0;else ret=-1;} arrLen>1{for(i=2;i<=arrLen;i=i+2) {if(arr[i] ~/^-[a-zA-Z]+/) {if((i+1)>arrLen||(arr[i+1] ~/^-.+/)){ret=-1}}}}{printf("%d\n",ret)}'`
+	echo $ret
+}
+
+#获取参数,如传入-f，获取-f后输入的参数值
+getParamValue() {
+	original=$1
+	search=$2
+	paramValue=`echo - $original | awk '{arrLen=split($0,arr," +")}{for(i=2;i<=arrLen;i++)if(arr[i]=="'"$search"'")printf("%s", arr[i+1])}'`
+	echo $paramValue
+}
+
+#获取对应环境的中INI属性对应的值
+getFromIni() {
+	key=$1
+	valueExpr=$2
+	ret=`sed -n '/\['"$CURRENT_ENV"'\]/,/\[[a-zA-Z][a-zA-Z]*\]/{s/^'"$key"'=\('"$valueExpr"'\) *.*$/\1/p}' $CONFIGFILE` #默认本目录
+	echo $ret
+}
+
+
+#通过awk打印某域
+printFieldInfo() {
+	line=$1
+	sep=$2
+	fill=$3
+	field=$4
+	check=`echo $line | awk -F "$sep" '{printf("%s",$'"$field"')}'`
+	if [ -n "$check" ]; then
+		echo $line | awk -F "$sep" '{printf("'"$fill"'%s\n",$'"$field"')}'		
+	else
+		awk -F $sep 'BEGIN{printf("'"$fill"'%s\n","not find.")}'
+	fi
+}
+
+#打印数据库中查询服务信息
+printServiceInfo() {
+	if [ -n "$2" ]; then
+		awk '{printf("    - 进入ESC时间    -->   %s\n    - 发送SYS时间    -->   %s\n    - 收到SYS时间    -->   %s\n    - ESC返回时间    -->   %s\n    - 耗时信息       -->   ALL  : %-15sBACK    : %-    20sESC        : %s\n    - C端其他信息    -->   TERM : %-15sRETCODE : %-20sRETMESSAGE : %s \n    - P端其他信息    -->   TERM : %-15sRETCODE : %-20sRETMESSAGE : %s\n\n", $1,$3,$4,$2,$5,$6,$7,$8,$9,$10,$11,$12,$    13)}' $tmpdata2 >> $1
+	else
+		awk '{printf("    - 进入ESC时间    -->   %s\n    - 发送SYS时间    -->   %s\n    - 收到SYS时间    -->   %s\n    - ESC返回时间    -->   %s\n    - 耗时信息       -->   ALL  : %-15sBACK    : %-        20sESC        : %s\n    - C端其他信息    -->   TERM : %-15sRETCODE : %-20sRETMESSAGE : %s \n    - P端其他信息    -->   TERM : %-15sRETCODE : %-20sRETMESSAGE : %s\n\n", $1,$3,$4,$2,$5,$6,$7,$8,$9,$10,$11,$12,$13)}'  $tmpdata2 | tee -a $1
+	fi
+}
+
+
+#根据全局流水号查询
+searchDBByBizSeqno() {
+	printMsg "- 根据条件查询数据库:" "${BOLD}" "${NORM}"
+	echo "    时间范围    --> [$BEGINTIME, $ENDTIME]"
+	#统一先通过时间确定查询范围
+	innerTable="(select * from esc_trans_log n where n.TRANSSTAMP1 >= STR_TO_DATE('$BEGINTIME','%Y-%m-%d %H:%i:%s') and n.TRANSSTAMP1 <= STR_TO_DATE('$ENDTIME','%Y-%m-%d %H:%i:%s'))"
+	#拼凑where查询语句
+	condition="where 1=1 "
+	if [ -n "$BIZSEQNO" ]; then
+		echo "    全局流水号  --> [$BIZSEQNO]"
+		#ESC流水表的索引设置，构建sql优化查询速度
+		innerTable="(select * from esc_trans_log n where n.BUSINESSFLOWNO = '$BIZSEQNO' and n.TRANSSTAMP1 >= STR_TO_DATE('$BEGINTIME','%Y-%m-%d %H:%i:%s') and n.TRANSSTAMP1 <= STR_TO_DATE('$ENDTIME','%Y-%m-%d %H:%i:%s'))"
+		#condition="$condition and t.TRANSSTAMP1 >= STR_TO_DATE('$BEGINTIME','%Y-%m-%d %H:%i:%s') and t.TRANSSTAMP1 <= STR_TO_DATE('$ENDTIME','%Y-%m-%d %H:%i:%s')"
+	fi
+	if [ -n "$C_CHANNEL" ]; then
+		echo "    渠道        --> [$C_CHANNEL]"	
+		condition="$condition and t.CHANNELID = '$C_CHANNEL'"
+	fi
+	if [ -n "$C_SYSTEM" ]; then
+		echo "    系统        --> [$C_SYSTEM]"
+                condition="$condition and t.SYSTEMID = '$C_SYSTEM'"
+        fi
+	if [ -n "$C_ESCFLOWNO" ]; then
+		echo "    ESC流水号   --> [$C_ESCFLOWNO]"
+                condition="$condition and t.ESCFLOWNO = '$C_ESCFLOWNO'"
+        fi
+	if [ -n "$C_SERVICEID" ]; then
+		echo "    服务码      --> [$C_SERVICEID]"
+                condition="$condition and t.SERVICEID = '$C_SERVICEID'"
+        fi
+	if [ -n "$C_STATUS" ]; then
+		if [ "$C_STATUS" = "S" ]; then
+			echo "    成功状态    --> [SUCCESS]"
+			condition="$condition and t.ESCSTATUS = '0'"
+		elif [ "$C_STATUS" = "F" ]; then
+			echo "    成功状态    --> [FAIL]"
+                        condition="$condition and t.ESCSTATUS = '1'"
+		fi
+        fi
+	
+	echo "SELECT t.ESCFLOWNO,if(t.BUSINESSFLOWNO is null or LENGTH(TRIM(t.BUSINESSFLOWNO))<1,'null',t.BUSINESSFLOWNO),if(t.CHANNELID is null or LENGTH(TRIM(t.CHANNELID))<1,'null',t.CHANNELID),if(t.SERVICEID is null or LENGTH(TRIM(t.SERVICEID))<1,'null',t.SERVICEID),if(t.SYSTEMID is null or LENGTH(TRIM(t.SYSTEMID))<1,'null',t.SYSTEMID),count(*) from $innerTable t $condition group by t.CHANNELID,t.SERVICEID,t.SERVICEID,t.ESCFLOWNO,t.BUSINESSFLOWNO" > $tmpsql
+	#查询记录数，正常应该是每个服务码对应两条记录C/P
+	ret=`operateDB $tmpdata`
+	if [ "$ret" = "0" ]; then
+		recordNum=$(wc -l $tmpdata | awk '{print $1}')
+		if [ 0 -eq $recordNum ]; then
+			printMsg "\n    Warning: 数据库未匹配到记录\n" "${BOLD}" "${NORM}"
+			return
+		fi
+		printMsg "- 获得记录数[$recordNum]" "${BOLD}" "${NORM}"
+		awk 'BEGIN{printf("    %-3s|%-30s|%-35s|%-20s|%-18s|%-20s|%-5s\n","ID","ESCFLOWNO","BIZDEQNO","CHANNEL","SERVICEID","SYSTEM","NUM");printf("    ");for(i=0;i<135;i++)printf("-");id=0;printf("\n")}{printf("    %-3s|%-30s|%-35s|%-20s|%-18s|%-20s|%-5s\n",(++id),$1,$2,$3,$4,$5,$6)}' $tmpdata
+		echo
+	else
+		printMsg "Error: 数据库流水号查询错误，返回码：$ret" "${BOLD}" "${NORM}"
+	fi
+	#是否显示详细信息
+	if [ "$C_DETAIL" != "0" ]; then
+		#处理每个服务码
+		dealNum=0
+		outPut="$tmpdetail"
+		while read line
+		do
+			#处理默认显示条数
+			if [ $SHOW_SERVICE_NUM -le $dealNum ]; then
+				if [ $SHOW_SERVICE_NUM -eq $dealNum ]; then printMsg "\nWarning: 仅展示前$SHOW_SERVICE_NUM条记录，更多数据[less $tmpdetail]\n" "${BOLD}" "${NORM}"; fi
+				echo "- $(($dealNum+1)). $(echo $line |awk '{printf("[%s]",$3)}')详细信息"  >> $outPut
+				printFieldInfo "$line" " " "    - ESC流水号      -->   " "1" >> $outPut
+				printFieldInfo "$line" " " "    - 全局流水号     -->   " "2" >> $outPut
+				printFieldInfo "$line" " " "    - 渠道           -->   " "3" >> $outPut
+				printFieldInfo "$line" " " "    - 系统           -->   " "4" >> $outPut
+				gT="TRUE"
+			else
+				printMsg "- $(($dealNum+1)).$(echo $line |awk '{printf("[%s]",$3)}')详细信息" "${BOLD}" "${NORM}" | tee -a $outPut
+				printFieldInfo "$line" " " "    - ESC流水号      -->   " "1" | tee -a $outPut
+				printFieldInfo "$line" " " "    - 全局流水号     -->   " "2" | tee -a $outPut
+				printFieldInfo "$line" " " "    - 渠道           -->   " "3" | tee -a $outPut
+				printFieldInfo "$line" " " "    - 系统           -->   " "4" | tee -a $outPut
+			fi
+			esc_flowno=`echo $line | awk '{printf("%s",$1)}'`
+			#判断是否具有两条记录,1条记录代表只有一条日志，需特殊处理
+			if [ "2" = "$(echo $line | awk '{printf("%s",$6)}')" ]; then
+				echo "SELECT DATE_FORMAT(t1.TRANSSTAMP1,'%Y-%m-%d_%T:%f') inTime,DATE_FORMAT(t1.TRANSSTAMP4,'%Y-%m-%d_%T:%f') outTime,DATE_FORMAT(t2.TRANSSTAMP2,'%Y-%m-%d_%T:%f') sENDTIME,DATE_FORMAT(t2.TRANSSTAMP3,'%Y-%m-%d_%T:%f') recvTime, (UNIX_TIMESTAMP(t1.TRANSSTAMP4) - UNIX_TIMESTAMP(t1.TRANSSTAMP1)) allTime, ( UNIX_TIMESTAMP(t2.TRANSSTAMP3) - UNIX_TIMESTAMP(t2.TRANSSTAMP1) ) backTime, ( ( UNIX_TIMESTAMP(t1.TRANSSTAMP4) - UNIX_TIMESTAMP(t1.TRANSSTAMP1) ) - ( UNIX_TIMESTAMP(t2.TRANSSTAMP3) - UNIX_TIMESTAMP(t2.TRANSSTAMP1) ) ) escTime, t1.TERMINALNO cTerm, t1.BUSINESSRESPCODE cCode, t1.BUSINESSRESPMSG cMsg, t2.TERMINALNO pTerm, t2.BUSINESSRESPCODE pCode, t2.BUSINESSRESPMSG pMsg FROM ( SELECT * FROM $innerTable t $condition AND t.ESCFLOWNO = '$esc_flowno' AND t.FLOWLOCATION = 'C' ) t1, ( SELECT * FROM $innerTable t $condition AND t.ESCFLOWNO = '$esc_flowno' AND t.FLOWLOCATION = 'P') t2"  > $tmpsql
+				ret=`operateDB $tmpdata2`
+				if [ "$ret" = "0" ]; then
+					printServiceInfo "$outPut"  "$gT"
+				else
+					printMsg "Error: 数据库ESC流水号查询错误，返回码：$ret" "${BOLD}" "${NORM}"
+				fi
+			else
+				#确定C日志还是P日志
+				echo "SELECT t.FLOWLOCATION from $innerTable t $condition and t.ESCFLOWNO = '$esc_flowno'" > $tmpsql	
+				ret=`operateDB $tmpdata2`
+				if [ "$ret" = "0" ]; then
+					#如果是C
+					if [ "`cat $tmpdata2`" = "C" ]; then
+						echo "select DATE_FORMAT( t.TRANSSTAMP1, '%Y-%m-%d_%T:%f' ) inTime, DATE_FORMAT( t.TRANSSTAMP4, '%Y-%m-%d_%T:%f' ) outTime,'unknown' sENDTIME, 'unknown' recvTime,( UNIX_TIMESTAMP(t.TRANSSTAMP4) - UNIX_TIMESTAMP(t.TRANSSTAMP1) ) allTime,'unknown' backTime, 'unknown' escTime, t.TERMINALNO cTerm, t.BUSINESSRESPCODE cCode, t.BUSINESSRESPMSG cMsg,'unknown' pTerm,'unknown' pCode,'unknown' pMsg from $innerTable t $condition AND t.ESCFLOWNO = '$esc_flowno' AND t.FLOWLOCATION = 'C'" > $tmpsql
+						ret=`operateDB $tmpdata2`
+						if [ "$ret" = "0" ]; then
+							printServiceInfo  "$outPut" "$gT"
+						else
+							printMsg "Error: 数据库C日志查询错误，返回码：$ret" "${BOLD}" "${NORM}"	
+						fi
+					elif [ "`cat $tmpdata2`" = "P" ]; then
+						echo "select 'unknown' inTime, 'unknown' outTime,DATE_FORMAT( t.TRANSSTAMP2, '%Y-%m-%d_%T:%f' ) sENDTIME, DATE_FORMAT( t.TRANSSTAMP3, '%Y-%m-%d_%T:%f' ) recvTime,'unknown' allTime,( UNIX_TIMESTAMP(t.TRANSSTAMP3) - UNIX_TIMESTAMP(t.TRANSSTAMP2) ) backTime, 'unknown' escTime, 'unknown' cTerm, 'unknown' cCode, 'unknown' cMsg,t.TERMINALNO pTerm,t.BUSINESSRESPCODE pCode,t.BUSINESSRESPMSG pMsg from $innerTable t $condition AND t.ESCFLOWNO = '$esc_flowno' AND t.FLOWLOCATION = 'P'" > $tmpsql
+						ret=`operateDB $tmpdata2`
+						if [ "$ret" = "0" ]; then
+							printServiceInfo  "$outPut"  "$gT"
+						else
+							printMsg "Error: 数据库P日志查询错误，返回码：$ret" "${BOLD}" "${NORM}"
+						fi
+					fi
+                        	else
+                                	printMsg "Error: 数据库流水位置查询错误，返回码：$ret" "${BOLD}" "${NORM}"
+                        	fi
+			fi
+			dealNum=$(($dealNum+1))
+		done < $tmpdata
+	fi
+}
+
+#远程命令执行
+getRemoteRet() {
+	vIp=$1
+	vUser=$2
+	vPassword=$3
+	vCmd=$4
+	sshpass -p $vPassword ssh  -o StrictHostKeychecking=no -o GSSAPIAuthentication=no $vUser@$vIp "$vCmd"
+}
+
+#远程搜索
+searchRemoteByFlow() {
+	serverNum=`sed -n '/^$/!p' $tmpserver |wc -l | awk '{print $1}'`
+	if [ 0 -eq $serverNum ]; then
+		printMsg "\nWarning: 未配置服务器，略过服务器搜索\n" "${BOLD}" "${NORM}"
+		return
+	fi
+	#遍历主机
+	printMsg "- 搜索服务器日志" "${BOLD}" "${NORM}"
+	>$tmpremote
+	for line in `cat $tmpserver`
+	do
+		vUser=`echo $line | cut -d : -f 1`
+		vPassword=`echo $line | cut -d : -f 2`
+		vIp=`echo $line | cut -d : -f 3`
+		vPath=`echo $line | cut -d : -f 4`
+		grepStr=""
+		echo -e "    >>>  $vIp\c"
+		#echo $vUser $vPassword $vIp $vPath
+		#全局流水号与esc流水号选择其一匹配，其中全局流水号可以匹配多个交易，优先使用全局流水号
+		if [ -n "$BIZSEQNO" ];then
+			grepStr="$BIZSEQNO"
+		else
+			grepStr="$C_ESCFLOWNO"
+		fi
+		#matchFile=`sshpass -p $vPassword ssh  -o StrictHostKeychecking=no -o GSSAPIAuthentication=no $vUser@$vIp "grep -l $C_ESCFLOWNO $vPath/*log"`
+		matchFile=`getRemoteRet $vIp $vUser $vPassword "grep -lE '$grepStr' $vPath/*log 2>/dev/null"`
+		if [ -n "$matchFile" ]; then	
+			echo $matchFile | awk 'BEGIN{RS=" "}{printf("'"$vUser"':'"$vPassword"':'"$vIp"':%s\n",$0)}' >> $tmpremote
+		fi
+		echo  -e "    FINISH"
+	done
+	echo
+	unblankNum=`sed -n '{/^$/!p}' $tmpremote | wc -l`
+	if [ $unblankNum -gt 0 ]; then
+		#对结果分析
+		printMsg "- 统计结果" "${BOLD}" "${NORM}"
+		serviceFlag=0
+		dealNum=1
+		showSymbol='-'
+		showSymbolNum=70
+		sed -n '/^$/!{/\/[0-9][0-9]*_[cp].log$/p}' $tmpremote | while read line
+		do
+			#打印标题头
+			if [ "$serviceFlag" = "0" ]; then
+				serviceFlag=1
+				awk 'BEGIN{printf("    ");for(i=0;i<'"$showSymbolNum"';i++)printf("'"$showSymbol"'");printf("\n");printf("    %-5s|%-20s|%-5s\n","ID","SERVICEID","RECORDNUM")}'
+			fi
+			#判断这个服务码是否已经统计过，通过创建文件实现
+			fileName=`echo $line | awk '{len=split($0,arr,"/");print arr[len];}'`
+			serviceId=`echo $fileName | cut -d _ -f 1`
+			find $tmprmtresult -type f | grep -E "\.$serviceId\.${PID}$" > /dev/null 2>&1
+			if [ $? -eq 0 ]; then
+				continue
+			fi
+			#打印统计信息
+			awk 'BEGIN{printf("    ");for(i=0;i<'"$showSymbolNum"';i++)printf("'"$showSymbol"'");printf("\n");printf("    %-5s|%-20s|%-5s\n",'"$dealNum"',"'"$serviceId"'",'"$(grep -cE "/${serviceId}_[cp]" $tmpremote)"');printf("    ");for(i=0;i<'"$showSymbolNum"';i++)printf("'"$showSymbol"'");printf("\n")}'
+			#打印服务匹配的文件
+			grep -E "/${serviceId}_[cp]" $tmpremote | awk -F : '{printf("        ++++ %s ++ %s\n",$3,$4)}'
+			#生成带序号的文件
+			sortNum=$dealNum
+			if [ 1 -eq ${#dealNum} ]; then
+				sortNum="00"$dealNum
+			elif [ 2 -eq ${#dealNum} ]; then
+				sortNum="0"$dealNum
+			fi
+			grep -E "/${serviceId}_[cp]" $tmpremote | awk '{printf("%s\n",$0)}' > $tmprmtresult$sortNum.$serviceId.${PID}
+			#计数加一
+			dealNum=$((dealNum+1))
+		done
+		#查看是否匹配common.log文件
+		commonFlag=0
+		sed -n '/^$/!{/common.log$/p}' $tmpremote  | while read line
+		do
+			if [ "$commonFlag" = "0" ]; then
+				commonFlag=1
+				awk 'BEGIN{printf("    ");for(i=0;i<'"$showSymbolNum"';i++)printf("'"$showSymbol"'");printf("\n    匹配到common.log文件,若未匹配c/p日志,可能已被打包或服务识别失败\n    ");for(i=0;i<'"$showSymbolNum"';i++)printf("'"$showSymbol"'");printf("\n")}'
+			fi
+			echo $line | awk -F : '{printf("        ++++ %s ++ %s\n",$3,$4)}'
+		done
+		echo
+		#是否显示详细信息，注意这里忽略了common.log文件，各项信息仅取自C和P日志文件
+        	if [ "$C_DETAIL" != "0" ]; then
+			#处理每个服务码
+			dealNum=0
+			outPut="$tmpdetail2"
+			for fileDeal in `find $tmprmtresult -maxdepth 1 -type f -name "*${PID}" | sort`
+			do	
+				#如果全局流水号不为空，需要查询到esc流水号确定内容
+				printMsg "- $(($dealNum+1)).$(echo $fileDeal |awk -F \. '{printf("[%s]",$(NF-1))}')详细信息" "${BOLD}" "${NORM}"
+
+				#查找C端日志
+				grep -E "[0-9]+_c.log" $fileDeal > /dev/null 2>&1
+				if [ 0 -eq $? ]; then
+					#包含C端日志，需要先查询common日志确定ESC进入时间
+					c_file=`grep -E "[0-9]+_c.log" $fileDeal`
+					#echo $c_file
+					vUser=`echo $c_file | cut -d : -f 1`
+					vPassword=`echo $c_file | cut -d : -f 2`
+					vIp=`echo $c_file | cut -d : -f 3`
+					vLog=`echo $c_file | cut -d : -f 4`
+					echo "    C端获取 --> $vIp:$vLog"
+					#echo $vUser $vPassword $vIp $vLog
+					#根据是否拥有全局流水号分别处理
+					if [ -n "$BIZSEQNO" ];then
+						#远程获取信息，结果通过@分隔
+						retMsg=$BIZSEQNO@$(getRemoteRet $vIp $vUser $vPassword "escflow=\$(sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*INFO.*$BIZSEQNO/{p;q}' $vLog | cut -d ' ' -f 4);if [ -z \"\$escflow\" ];then escflow=\$(sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*DEBUG.*$BIZSEQNO/{p;q}' $vLog | cut -d ' ' -f 4);fi;echo -e \$escflow@\\\\c;sed -n '/^\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) at \([0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}.[0-9]\{3\}\).*'\"\$escflow\"'.*/{s//\1 \2/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}.*'\"\$escflow\"'.*/p' $vLog | sed -n '\${s/^\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) at \([0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}.[0-9]\{3\}\).*'\"\$escflow\"'.*/\1 \2/p}';echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*immuneChannelid=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*realChannel=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*ServiceId=\([0-9][0-9]*\).*SceneId=\([0-9][0-9]*\).*/{s//\1\2/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*realSystem=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*Dfa=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*ConsumerSystemId=\([0-9][0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*flowname=\([a-zA-Z][a-zA-Z]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*ERROR.*MessageExceptionMessage.*errorCode=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*ERROR.*MessageExceptionMessage.*errorMessage=\(.*\)\$/{s//\1/p;q}' $vLog;")
+						
+					else
+						retMsg=$(getRemoteRet $vIp $vUser $vPassword "sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*$C_ESCFLOWNO.*INFO.*BizSeqNo=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;escflow=$C_ESCFLOWNO;echo -e \$escflow@\\\\c;sed -n '/^\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) at \([0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}.[0-9]\{3\}\).*'\"\$escflow\"'.*/{s//\1 \2/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}.*'\"\$escflow\"'.*/p' $vLog | sed -n '\${s/^\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) at \([0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}.[0-9]\{3\}\).*'\"\$escflow\"'.*/\1 \2/p}';echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*immuneChannelid=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*realChannel=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*ServiceId=\([0-9][0-9]*\).*SceneId=\([0-9][0-9]*\).*/{s//\1\2/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*realSystem=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*Dfa=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*ConsumerSystemId=\([0-9][0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*flowname=\([a-zA-Z][a-zA-Z]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*ERROR.*MessageExceptionMessage.*errorCode=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*ERROR.*MessageExceptionMessage.*errorMessage=\(.*\)\$/{s//\1/p;q}' $vLog;")
+					fi
+					printFieldInfo "$retMsg" "@" "      - 全局流水号 -->  " "1"
+					printFieldInfo "$retMsg" "@" "      - ESC流水号  -->  " "2"
+					printFieldInfo "$retMsg" "@" "      - 开始时间   -->  " "3"
+					printFieldInfo "$retMsg" "@" "      - 结束时间   -->  " "4"
+					printFieldInfo "$retMsg" "@" "      - 渠道       -->  " "5"
+					printFieldInfo "$retMsg" "@" "      - 接入协议   -->  " "6"
+					printFieldInfo "$retMsg" "@" "      - 服务号     -->  " "7"
+					printFieldInfo "$retMsg" "@" "      - 系统       -->  " "8"
+					printFieldInfo "$retMsg" "@" "      - DFA号      -->  " "9"
+					printFieldInfo "$retMsg" "@" "      - 系统号     -->  " "10"
+					printFieldInfo "$retMsg" "@" "      - 适配流程   -->  " "11"
+					printFieldInfo "$retMsg" "@" "      - 错误码     -->  " "12"
+					printFieldInfo "$retMsg" "@" "      - 错误信息   -->  " "13"
+				fi
+
+				#查找P端日志
+				grep -E "[0-9]+_p.log" $fileDeal > /dev/null 2>&1
+                                if [ 0 -eq $? ]; then
+                                        #包含P端日志
+					p_file=`grep -E "[0-9]+_p.log" $fileDeal`
+					#echo $p_file
+					vUser=`echo $p_file | cut -d : -f 1`
+					vPassword=`echo $p_file | cut -d : -f 2`
+					vIp=`echo $p_file | cut -d : -f 3`
+					vLog=`echo $p_file | cut -d : -f 4`
+					echo "    P端获取 --> $vIp:$vLog"
+					#echo $vUser $vPassword $vIp $vLog
+					if [ -n "$BIZSEQNO" ];then
+						retMsg=$BIZSEQNO@$(getRemoteRet $vIp $vUser $vPassword "escflow=\$(sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*INFO.*$BIZSEQNO/{p;q}' $vLog | cut -d ' ' -f 4);if [ -z \"\$escflow\" ];then escflow=\$(sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*DEBUG.*$BIZSEQNO/{p;q}' $vLog | cut -d ' ' -f 4);fi;echo -e \$escflow@\\\\c;sed -n '/^\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) at \([0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}.[0-9]\{3\}\).*'\"\$escflow\"'.*/{s//\1 \2/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}.*'\"\$escflow\"'.*/p' $vLog | sed -n '\${s/^\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) at \([0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}.[0-9]\{3\}\).*'\"\$escflow\"'.*/\1 \2/p}';echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}.*'\"\$escflow\"'.*host:\([0-9.][0-9.]*\).*port:\([0-9][0-9]*.*\)\$/{s//##\1:\2/p}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*immuneChannelid=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*realChannel=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*ServiceId=\([0-9][0-9]*\).*SceneId=\([0-9][0-9]*\).*/{s//\1\2/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*realSystem=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*Dfa=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*ConsumerSystemId=\([0-9][0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*flowname=\([a-zA-Z][a-zA-Z]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*Err_Service=\([a-zA-Z_][a-zA-Z_]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*code=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*message=\([^&][^&]*\).*/{s//\1/p;q}' $vLog;")
+					else
+						retMsg=$(getRemoteRet $vIp $vUser $vPassword "sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*$C_ESCFLOWNO.*INFO.*BizSeqNo=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;escflow=$C_ESCFLOWNO;echo -e \$escflow@\\\\c;sed -n '/^\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) at \([0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}.[0-9]\{3\}\).*'\"\$escflow\"'.*/{s//\1 \2/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}.*'\"\$escflow\"'.*/p' $vLog | sed -n '\${s/^\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\) at \([0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}.[0-9]\{3\}\).*'\"\$escflow\"'.*/\1 \2/p}';echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}.*'\"\$escflow\"'.*host:\([0-9.][0-9.]*\).*port:\([0-9][0-9]*.*\)\$/{s//##\1:\2/p}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*immuneChannelid=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*realChannel=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*ServiceId=\([0-9][0-9]*\).*SceneId=\([0-9][0-9]*\).*/{s//\1\2/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*realSystem=\([a-zA-Z0-9_\\\\\-][a-zA-Z0-9_\\\\-]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*Dfa=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*ConsumerSystemId=\([0-9][0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*flowname=\([a-zA-Z][a-zA-Z]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*Err_Service=\([a-zA-Z_][a-zA-Z_]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*code=\([a-zA-Z0-9][a-zA-Z0-9]*\).*/{s//\1/p;q}' $vLog;echo -e @\\\\c;sed -n '/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}.*'\"\$escflow\"'.*INFO.*message=\([^&][^&]*\).*/{s//\1/p;q}' $vLog;")
+					fi
+					printFieldInfo "$retMsg" "@" "      - 全局流水号 -->  " "1"
+					printFieldInfo "$retMsg" "@" "      - 流水号  -->  " "2"
+					printFieldInfo "$retMsg" "@" "      - 开始时间   -->  " "3"
+					printFieldInfo "$retMsg" "@" "      - 结束时间   -->  " "4"
+					printFieldInfo "$retMsg" "@" "      - 接出地址   -->  " "5"
+					printFieldInfo "$retMsg" "@" "      - 渠道       -->  " "6"
+					printFieldInfo "$retMsg" "@" "      - 接入协议   -->  " "7"
+					printFieldInfo "$retMsg" "@" "      - 服务号     -->  " "8"
+					printFieldInfo "$retMsg" "@" "      - 系统       -->  " "9"
+					printFieldInfo "$retMsg" "@" "      - DFA号      -->  " "10"
+					printFieldInfo "$retMsg" "@" "      - 系统号     -->  " "11"
+					printFieldInfo "$retMsg" "@" "      - 适配流程   -->  " "12"
+					printFieldInfo "$retMsg" "@" "      - 错误位置   -->  " "13"
+					printFieldInfo "$retMsg" "@" "      - 错误码     -->  " "14"
+					printFieldInfo "$retMsg" "@" "      - 错误信息   -->  " "15"
+                                fi
+				echo
+				dealNum=$(($dealNum+1))
+			done
+		fi
+		
+	else
+		printMsg "    Warning: 服务器未匹配到记录\n" "${BOLD}" "${NORM}"
+	fi
+}
+
+#根据字符串获取时间，5d,3m等格式
+getDate() {
+	timeStr=$1
+	suffix=`echo $timeStr | awk '{len=split($0,arr,"");print arr[len];}'`
+	timeNum=`echo $timeStr | grep -Eo '[0-9]+'`
+	case $suffix in
+		"d")
+        		echo `date -d "-$timeNum day" "+%Y-%m-%d %H:%M:%S"`
+                        ;;
+		"h")
+			echo `date -d "-$timeNum hour" "+%Y-%m-%d %H:%M:%S"`
+			;;
+		"m")
+			echo `date -d "-$timeNum minute" "+%Y-%m-%d %H:%M:%S"`
+			;;
+		"s")
+			echo `date -d "-$timeNum second" "+%Y-%m-%d %H:%M:%S"`
+			;;
+		*)
+			echo `date "+%Y-%m-%d %H:%M:%S"`
+		;;
+	esac
+}
+
+#主函数
+main(){	
+	#检验输入命令是否合法
+	checkRet=`checkParamsValid "$inputParams"`
+	if [ "${checkRet}" != "0" ]; then
+        	if [ -n "$intputParams" ]; then 
+			printMsg "Error: 参数设置不合法" "${BOLD}" "${NORM}"
+		fi
+		helpMenu
+		exit
+    	fi
+
+	printMsg "\nBEGIN...\n" "${BOLD}" "${NORM}"
+	printFlag "~" 100
+
+    	#帮助菜单
+    	if [ "${inputParams}" = "-help"  -o "${inputParams}" = "?" ]; then
+        	helpMenu
+    	fi
+
+	#清理临时文件
+        cleanTmpTOU $LOGTMP
+	
+	#获取环境信息，默认为DEFAULT_ENV，设置环境信息不存在，置为SIT
+	CURRENT_ENV=`getParamValue "$inputParams" -e`
+	export CURRENT_ENV=${CURRENT_ENV^^}	#统一大写，方便处理
+	grep "\[$CURRENT_ENV\]" $CONFIGFILE  > /dev/null 2>&1
+	if [ $? -ne 0 -o -z "$CURRENT_ENV" ]; then
+		CURRENT_ENV=$DEFAULT_ENV
+		printMsg "Warning: 未设置环境信息或未配置，将环境设置为SIT" "${BOLD}" "${NORM}"
+	fi
+	printMsg "- 操作环境:" "${BOLD}" "${NORM}"
+	echo "    [$CURRENT_ENV]"
+
+	#根据环境信息获取数据库信息
+	export DATABASE_IP=`getFromIni DATABASE_IP '[0-9.][0-9.]*'`
+	export DATABASE_PORT=`getFromIni DATABASE_PORT '[0-9][0-9]*'`
+	export DATABASE_DB=`getFromIni DATABASE_DB '[a-zA-Z0-9_][a-zA-Z0-9_]*'`
+	export DATABASE_USER=`getFromIni DATABASE_USER '[a-zA-Z0-9_][a-zA-Z0-9_]*'`
+	export DATABASE_PASSWORD=`getFromIni DATABASE_PASSWORD '[a-zA-Z0-9_][a-zA-Z0-9_]*'`
+	if [ $USE_DB = "1" -a -z "$DATABASE_IP" -a -z "$DATABASE_PORT" -a -z "$DATABASE_DB" -a -z "$DATABASE_USER" -a -z "$DATABASE_PASSWORD" ]; then
+		printMsg "Error: 请在[$CONFIGFILE]配置DATABASE_IP,DATABASE_PORT,DATABASE_DB,DATABASE_USER,DATABASE_PASSWORD" "${BOLD}" "${NORM}"
+		exit
+	fi
+	if [ $USE_DB = "1" ]; then
+		printMsg "- 数据库信息:" "${BOLD}" "${NORM}"
+		echo "    [$DATABASE_USER --> mysql://$DATABASE_IP:$DATABASE_PORT/$DATABASE_DB]"
+	fi
+	#echo $DATABASE_IP
+	#echo $DATABASE_PORT
+	#echo $DATABASE_DB
+	#echo $DATABASE_USER
+	#echo $DATABASE_PASSWORD
+
+	printFlag "~" 100
+
+	#获取时间参数，支持5d-3m,5d格式，时间默认当天
+	timeStr=`getParamValue "$inputParams" -t`
+	if [ -z $timeStr ]; then
+		#不传，查询当天数据
+		BEGINTIME="`date +%Y-%m-%d` 00:00:00"
+		ENDTIME=`date "+%Y-%m-%d %H:%M:%S"`
+	else
+		echo $timeStr | grep "-" > /dev/null 2>&1
+		if [ $? -eq 0 ]; then
+			first=`echo $timeStr | awk -F \- '{print $1}'`
+			second=`echo $timeStr | awk -F \- '{print $2}'`
+			BEGINTIME=`getDate $first`
+			ENDTIME=`getDate $second`
+		else
+			BEGINTIME=`getDate $timeStr`
+			ENDTIME=`date "+%Y-%m-%d %H:%M:%S"`
+		fi
+	fi
+	export BEGINTIME
+	export ENDTIME
+	#echo $BEGINTIME
+	#echo $ENDTIME
+
+	#传入的参数变量
+	export C_CHANNEL=`getParamValue "$inputParams" -c`
+	export C_SYSTEM=`getParamValue "$inputParams" -m`
+	export C_ESCFLOWNO=`getParamValue "$inputParams" -f`
+	export C_SERVICEID=`getParamValue "$inputParams" -s`
+	export C_STATUS=`getParamValue "$inputParams" -r`
+
+    	#根据全局流水号查询
+	export BIZSEQNO=`getParamValue "$inputParams" -b`
+	#echo $BIZSEQNO
+	
+	#是否显示详细信息
+	isShow=`getParamValue "$inputParams" -h`
+	if [ "$isShow" = "F" ]; then
+		export C_DETAIL=0
+	fi
+	
+	#设置默认限制值
+	showNum=`getParamValue "$inputParams" -n | grep -Eo '[0-9]+'`	
+	if [ -n "$showNum" ]; then
+		SHOW_SERVICE_NUM=$showNum
+	fi
+	
+	#取消查询
+	C_DB=`getParamValue "$inputParams" -d`
+	C_SSHPASS=`getParamValue "$inputParams" -l`
+	if [ "$C_DB" = "F" ]; then
+		USE_DB=0
+	fi
+	if [ "$C_SSHPASS" = "F" ]; then
+                USE_SSHPASS=0
+        fi
+
+	#根据条件数据库查询
+	if [ $USE_DB = "1" ]; then
+		searchDBByBizSeqno
+	else
+		printMsg "\nWarning: 略过数据库搜索\n" "${BOLD}" "${NORM}"
+	fi
+
+	printFlag "~" 100
+
+	if [ $USE_SSHPASS = "1" ]; then
+		#根据环境信息获取远程主机信息
+		getFromIni 'SERVER[^=]*' '[0-9a-zA-Z_@!:\/\.][0-9a-zA-Z_@!:\/\.]*' > $tmpserver
+		printMsg "- 搜索服务器信息:" "${BOLD}" "${NORM}"
+		cat $tmpserver | awk -F : 'BEGIN{RS=" "}{if(length($0)>1)printf("    %-10s%-16s %s\n"),$1,$3,$4}'
+		if [ -n "$BIZSEQNO" -o -n "$C_ESCFLOWNO" ]; then
+			searchRemoteByFlow
+		else
+			printMsg "    Warinng: 全局流水号与流水号均为空，忽略远程查询\n" "${BOLD}" "${NORM}"
+		fi
+	else
+		printMsg "\nWarning: 略过服务器搜索\n" "${BOLD}" "${NORM}"
+	fi
+	
+	printFlag "~" 100
+	printMsg "\nEND...\n" "${BOLD}" "${NORM}"
+}
+
+#执行主函数
+main

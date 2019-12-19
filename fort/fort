@@ -1,0 +1,204 @@
+#!/bin/bash
+# author 
+#       xueming.wang
+# date
+#       2019-12-19
+# program:
+#       堡垒机登录程序
+
+#定义打印格式
+NORM="\033[0m"
+BOLD="\033[1m"
+
+#打印函数
+printMsg() {
+        mesg=$1
+        head=$2
+        tail=$3
+        echo -e "${head}${mesg}${tail}"
+}
+
+#ini配置文件
+#CONFIGFILE=`pwd`/hosts.ini
+CONFIGFILE=./hosts.ini
+
+#检测配置文件是否存在
+if [ ! -s "$CONFIGFILE" ];then
+        printMsg "Error: 请添加配置文件$CONFIGFILE"  "${BOLD}" "${NORM}"
+        exit
+fi
+
+#远程登录暂时使用sshpass实现
+sshpass -V > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+        printMsg "Warning: sshpass未安装，暂时无法实现远程登录"  "${BOLD}" "${NORM}"
+	exit
+fi
+
+awk '
+BEGIN {
+	no=1 		#记录登录数量
+	currEnv="" 	#记录当前环境
+
+}
+$0 ~ /^\[[A-Za-z]+\]/ {	#匹配ini中的环境信息
+	currEnv=$0	#记录当前环境
+	next
+}
+$0 ~! /^$/{
+	logins[no++]=$0 "=" currEnv 	#记录登录信息，包含环境信息
+}
+END{
+	#for(i=1;i<no;i++)
+	#	print logins[i]
+	sepLine="--------------------------------------------------------------------------"
+	relist(logins)				#打印服务器信息
+	for(;;) {
+		printf("%s\n",sepLine)
+		printf("'"$BOLD"'Usage:'"$NORM"'\n")
+		printf("  number [user]         登录序号对应服务器，用户名省略使用加*用户名\n")
+		printf("  u, U ,--User-defined  自定义登录\n")
+		printf("  l, L ,--list          重新列出服务器列表\n")
+		printf("  q, Q ,--quit          退出\n")
+		printf("                        Tips: [ctrl+backspace]删除错误输入。运行fort命令，重新进入\n")
+		printf("'"$BOLD"'请输入:'"$NORM"'\n")
+		printf(">>> ")
+		getline sel < "-"
+		#根据输入获取登录IP用户名密码
+		selLen=split(sel,sels," +")
+		if(selLen==1) {
+			if(match(sel,/[0-9]+/)) {
+				if(sel>0 && sel<no) {
+					connStr=logins[sel]		#获取登录字符串
+					split(logins[sel],temp,"=")	#获取ip和所有用户名
+					ip=temp[1]
+					split(temp[2],temp1,":")
+					split(temp1[1],temp2,"/")	#获取默认用户，即第一个
+					user=temp2[1]
+					passwd=temp2[2]
+					if(login(ip,user,passwd)!=0)
+                                        	printf("Error. 登录失败，请检查登录信息 %s@%s:%s\n",user,ip,passwd)
+					continue
+				} else {
+					print "Error. 输入数字范围不合法,范围[0," no "]"
+				}
+			} else if(sel=="u" || sel=="U" || sel=="--User-defined"){
+				breakU = 0
+				while(breakU==0) {
+					printf("  ip: ")
+					getline ip < "-"        #等待输入IP
+					if(match(ip,/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) {
+						break
+					} else if(ip=="q" || ip=="Q" || ip=="--quit") {
+						breakU=1
+						break
+					} else {
+						print "  Error. 输入IP不合法"
+					}
+				}
+				while(breakU==0) {
+					printf("  user: ")
+                                        getline user < "-"        #等待输入user
+                                        if(user=="q" || user=="Q" || user=="--quit") {
+                                                breakU=1
+						break
+					} else if(!match(user,/^$/)) {
+                                                break
+                                        } else {
+						print "  Error. 输入用户名不能为空"
+					}
+                                }
+				while(breakU==0) {
+					printf("  password: ")
+                                        getline passwd < "-"        #等待输入passwd
+					if(passwd=="q" || passwd=="Q" || passwd=="--quit") {
+						breakU=1
+						break
+					} else if(!match(passwd,/^$/)) {
+						break
+                                        } else {
+						print "  Error. 输入密码不能为空"
+					}
+                                }
+				if(breakU==0) {
+					if(login(ip,user,passwd)!=0)
+                                		printf("Error. 登录失败，请检查登录信息 %s@%s:%s\n",user,ip,passwd)
+				}
+			} else if(sel=="l" || sel=="L" || sel=="--list") {
+				relist(logins)
+			} else if(sel=="q" || sel=="Q" || sel=="--quit") {
+				print "Warning. 已退出"
+				break
+			} else
+				print "Error. 输入不合法"
+		} else if(selLen==2) {
+			selno=sels[1]
+			#校验登录序号和用户名
+			if(match(selno,/[0-9]+/)) {
+                                if(selno>0 && selno<no) {
+					connStr=logins[selno]		#获取登录字符串
+					split(connStr,temp,"=")		#获取ip和所有用户名
+					ip=temp[1]
+					temp1Len=split(temp[2],temp1,":")
+					find=0
+					for(i=1;i<=temp1Len;i++) {	#遍历所有用户名查找是否包含输入数据
+						split(temp1[i],temp2,"/")
+						if(sels[2]==temp2[1]){
+							find=1
+							user=temp2[1]
+							passwd=temp2[2]
+						}
+					}
+					if(find==1) {
+						if(login(ip,user,passwd)!=0)
+							printf("Error. 登录失败，请检查登录信息 %s@%s:%s\n",user,ip,passwd)
+						continue
+					} else {
+						print "Error. 输入用户名不合法"
+					}
+				} else {
+                                        print "Error. 输入数字范围不合法,范围[0," no "]"
+                                }
+			} else {
+                                print "Error. 输入数字不合法"
+                        }
+
+		} else
+			print "Error. 输入参数不合法"
+	}
+}
+function login(ip,user,passwd) {	#调用系统命令登录远程服务器
+	printf("\nWaring. [%s@%s]正在进入...\n\n", user, ip)
+	return system("sshpass -p " passwd " ssh  -o StrictHostKeychecking=no -o GSSAPIAuthentication=no " user "@" ip)
+}
+function relist(logins) {
+	print "'"$BOLD"'登录列表:'"$NORM"'"
+	print sepLine
+	for(i=1;i<no;i++) {
+		#展示处理
+		split(logins[i],arr,"=")
+		if(arr[3]!=newEnv) {
+			printf("%6s", arr[3])
+			newEnv=arr[3]
+		} else
+			printf("%6s", "")
+        	printf("%3s-%-16s",i,arr[1])
+        	usersLen=split(arr[2],users,":")
+        	for(j=1;j<=usersLen;j++) {
+                	infoLen=split(users[j],info,"/")
+			if(infoLen!=2 && infoLen!=3) {
+				printf("记录[%s]配置违法\n",ip)
+				continue
+			}
+                	if(j==1)		#第一条记录为默认用户，添加*号打印
+                        	printf("【*%d】%s",j,info[1])
+			else
+				printf("【%d】%s",j,info[1])
+                	if(infoLen==3)		#如果包含描述信息，将描述信息打印出来
+                        	printf(",%s",info[3])
+			if(j==usersLen)
+				print ""
+		}
+	}
+}
+' $CONFIGFILE

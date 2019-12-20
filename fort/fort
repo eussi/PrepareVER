@@ -20,7 +20,7 @@ printMsg() {
 
 #ini配置文件
 #CONFIGFILE=`pwd`/hosts.ini
-CONFIGFILE=./hosts.ini
+CONFIGFILE=~/hosts.ini
 
 #检测配置文件是否存在
 if [ ! -s "$CONFIGFILE" ];then
@@ -56,11 +56,11 @@ END{
 	for(;;) {
 		printf("%s\n",sepLine)
 		printf("'"$BOLD"'Usage:'"$NORM"'\n")
-		printf("  number [user]         登录序号对应服务器，用户名省略使用加*用户名\n")
-		printf("  u, U ,--User-defined  自定义登录\n")
-		printf("  l, L ,--list          重新列出服务器列表\n")
-		printf("  q, Q ,--quit          退出\n")
-		printf("                        Tips: [ctrl+backspace]删除错误输入。运行fort命令，重新进入\n")
+		printf("  Number [User]         登录序号对应服务器，用户名省略使用加*用户名\n")
+		printf("  U, u, --User-defined  自定义登录\n")
+		printf("  L, l, --list          重新列出服务器列表\n")
+		printf("  Q, q, --quit          退出\n")
+		printf("                        Tips: [Ctrl+backspace]删除错误输入。运行fort命令，重新进入\n")
 		printf("'"$BOLD"'请输入:'"$NORM"'\n")
 		printf(">>> ")
 		getline sel < "-"
@@ -78,13 +78,12 @@ END{
 					passwd=temp2[2]
 					if(login(ip,user,passwd)!=0)
                                         	printf("Error. 登录失败，请检查登录信息 %s@%s:%s\n",user,ip,passwd)
-					continue
 				} else {
 					print "Error. 输入数字范围不合法,范围[0," no "]"
 				}
 			} else if(sel=="u" || sel=="U" || sel=="--User-defined"){
 				breakU = 0
-				while(breakU==0) {
+				while(!breakU) {
 					printf("  ip: ")
 					getline ip < "-"        #等待输入IP
 					if(match(ip,/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) {
@@ -96,7 +95,7 @@ END{
 						print "  Error. 输入IP不合法"
 					}
 				}
-				while(breakU==0) {
+				while(!breakU) {
 					printf("  user: ")
                                         getline user < "-"        #等待输入user
                                         if(user=="q" || user=="Q" || user=="--quit") {
@@ -108,7 +107,7 @@ END{
 						print "  Error. 输入用户名不能为空"
 					}
                                 }
-				while(breakU==0) {
+				while(!breakU) {
 					printf("  password: ")
                                         getline passwd < "-"        #等待输入passwd
 					if(passwd=="q" || passwd=="Q" || passwd=="--quit") {
@@ -120,7 +119,7 @@ END{
 						print "  Error. 输入密码不能为空"
 					}
                                 }
-				if(breakU==0) {
+				if(!breakU) {
 					if(login(ip,user,passwd)!=0)
                                 		printf("Error. 登录失败，请检查登录信息 %s@%s:%s\n",user,ip,passwd)
 				}
@@ -132,7 +131,7 @@ END{
 			} else
 				print "Error. 输入不合法"
 		} else if(selLen==2) {
-			selno=sels[1]
+			selno=sels[1]					#选择的序号
 			#校验登录序号和用户名
 			if(match(selno,/[0-9]+/)) {
                                 if(selno>0 && selno<no) {
@@ -149,7 +148,7 @@ END{
 							passwd=temp2[2]
 						}
 					}
-					if(find==1) {
+					if(find) {
 						if(login(ip,user,passwd)!=0)
 							printf("Error. 登录失败，请检查登录信息 %s@%s:%s\n",user,ip,passwd)
 						continue
@@ -178,7 +177,7 @@ function relist(logins) {
 		#展示处理
 		split(logins[i],arr,"=")
 		if(arr[3]!=newEnv) {
-			printf("%6s", arr[3])
+			printf("%-6s", arr[3])
 			newEnv=arr[3]
 		} else
 			printf("%6s", "")
@@ -196,7 +195,7 @@ function relist(logins) {
 				printf("【%d】%s",j,info[1])
                 	if(infoLen==3)		#如果包含描述信息，将描述信息打印出来
                         	printf(",%s",info[3])
-			if(j==usersLen)
+			if(j==usersLen)		#最后一个用户信息添加回车
 				print ""
 		}
 	}

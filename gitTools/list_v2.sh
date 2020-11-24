@@ -4,7 +4,7 @@
 #author:
 #  xuemingwang 2020-11-21
 #usage:
-#  source list_v2.sh dir  
+#  source list.sh dir  
 
 #print format
 WHITE="\033[37m"

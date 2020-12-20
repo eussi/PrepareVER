@@ -22,12 +22,12 @@ printMsg() {
 
 ROOT_DIR=$1
 APP_FILENAME=app.properties
-APPID_SYMPOL=app.id
+APPID_SYMPOL=appid
 NULL_APPID=#########
 
 getAppId() {
     rootDir=$1
-    filePath=$ROOT_DIR'/'$rootDir'/src/main/resources/META-INF/'$APP_FILENAME
+    filePath=$ROOT_DIR'/'$rootDir'/'$APP_FILENAME
     #src\main\resources\META-INF\app.properties
     if [ -f "$filePath" ]; then
         echo `sed -n '/^'"$APPID_SYMPOL"'=\([0-9]*\)/s//\1/p' $filePath`
@@ -35,7 +35,7 @@ getAppId() {
         find=0
         for var in `ls $ROOT_DIR'/'$rootDir`
         do
-            secondFilePath=$ROOT_DIR'/'$rootDir'/'$var'/src/main/resources/META-INF/'$APP_FILENAME
+            secondFilePath=$ROOT_DIR'/'$rootDir'/'$var'/'$APP_FILENAME
 	    #echo $secondFilePath
 	    if [ -f "$secondFilePath" ]; then
                 echo `sed -n '/^'"$APPID_SYMPOL"'[ ]*=[ ]*\([0-9]*\)/s//\1/p' $secondFilePath`
